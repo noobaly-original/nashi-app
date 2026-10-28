@@ -70,7 +70,7 @@ struct WelcomeView:View {
             Toggle("Ready when you log in",isOn:Binding(get:{launchAtLogin},set:updateLaunch)).toggleStyle(.switch).font(.system(size:12)).disabled(launchUnavailable)
             if launchNeedsApproval { Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(NashiButtonStyle(.secondary,compact:true)) }
             if launchUnavailable { Text("Launch at login is unavailable for this copy.").font(.caption).foregroundStyle(.secondary) }
-            if let launchError { Text(launchError).font(.caption).foregroundStyle(.orange).lineLimit(2) }
+            if let launchError { LText(launchError).font(.caption).foregroundStyle(.orange).lineLimit(2) }
         }
     }
     private var converterItems: [WheelItem] {

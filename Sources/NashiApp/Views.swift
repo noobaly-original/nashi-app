@@ -100,7 +100,7 @@ struct SettingsView:View {
                     Toggle("Launch at login",isOn:Binding(get:{launch},set:updateLaunch)).disabled(launchUnavailable)
                     if launchNeedsApproval { HStack { Text("Allow Nashi in macOS Login Items.").font(.caption).foregroundStyle(.secondary);Spacer();Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() } } }
                     if launchUnavailable { Text("Launch at login is unavailable for this copy.").font(.caption).foregroundStyle(.secondary) }
-                    if let launchError { Text(launchError).font(.caption).foregroundStyle(.secondary) }
+                    if let launchError { LText(launchError).font(.caption).foregroundStyle(.secondary) }
                     Toggle("Launch minimized",isOn:$launchMinimized)
                     HStack {
                         Toggle("Sound and haptic feedback",isOn:$feedback)

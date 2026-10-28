@@ -9,6 +9,8 @@ final class AppLocalizationTests:XCTestCase {
         }
         XCTAssertEqual(AppLocalization.text("Language",language:"tr"),"Dil")
         XCTAssertEqual(AppLocalization.text("Launch minimized",language:"tr"),"Küçültülmüş olarak başlat")
+        XCTAssertEqual(AppLocalization.text("Startup is managed externally (e.g. by BlockBlock or a custom LaunchAgent). Please disable it in that tool.",language:"tr"),"Başlangıç harici olarak yönetiliyor (ör. BlockBlock veya özel bir LaunchAgent). Lütfen bu araç üzerinden devre dışı bırakın.")
+        XCTAssertEqual(AppLocalization.text("A LaunchAgent plist with this identifier already exists and belongs to another application.",language:"tr"),"Bu tanıtıcıya sahip bir LaunchAgent plist dosyası zaten mevcut ve başka bir uygulamaya ait.")
         XCTAssertEqual(AppLocalization.text("Library",language:"tr"),"Kitaplık")
         XCTAssertEqual(AppLocalization.text("READ QR CODES",language:"tr"),"QR KODLARINI OKU")
         XCTAssertEqual(AppLocalization.text("Resize Image".uppercased(),language:"tr"),"GÖRSELİ BOYUTLANDIR")
