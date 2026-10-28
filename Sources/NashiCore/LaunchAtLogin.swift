@@ -1,11 +1,13 @@
 import Foundation
 import ServiceManagement
 
+/// Represents the current launch-at-login registration state for the application.
 public struct LaunchAtLoginStatus: Equatable {
     public let isEnabled: Bool
     public let needsApproval: Bool
     public let isUnavailable: Bool
 
+    /// Creates a new launch-at-login status value.
     public init(isEnabled: Bool, needsApproval: Bool, isUnavailable: Bool) {
         self.isEnabled = isEnabled
         self.needsApproval = needsApproval
@@ -13,9 +15,11 @@ public struct LaunchAtLoginStatus: Equatable {
     }
 }
 
+/// Manages launch-at-login registration across `SMAppService` and the user `LaunchAgent` fallback.
 public enum LaunchAtLogin {
     public static let minimizedPreferenceKey = "launchMinimized"
 
+    /// Returns whether the given bundle URL and identifier represent a valid `.app` bundle.
     public static func isSupportedAppBundle(
         bundleURL: URL = Bundle.main.bundleURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier
@@ -28,12 +32,14 @@ public enum LaunchAtLogin {
         return true
     }
 
+    /// Returns the current user's `~/Library/LaunchAgents` directory URL.
     public static func defaultLaunchAgentsDirectory() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("LaunchAgents", isDirectory: true)
     }
 
+    /// Returns the URL for the Nashi-owned `LaunchAgent` property list file.
     public static func launchAgentURL(
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         directory: URL? = nil
@@ -46,6 +52,30 @@ public enum LaunchAtLogin {
         return base.appendingPathComponent("\(identifier).plist", isDirectory: false)
     }
 
+    /// Returns whether the Nashi-owned `LaunchAgent` plist exists and has a matching `Label`.
+    public static func hasOwnedLaunchAgent(
+        bundleURL: URL = Bundle.main.bundleURL,
+        executableURL: URL? = Bundle.main.executableURL,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        directory: URL? = nil
+    ) -> Bool {
+        guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !identifier.isEmpty,
+              let direct = launchAgentURL(bundleIdentifier: identifier, directory: directory),
+              let data = try? Data(contentsOf: direct),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              (plist["Label"] as? String) == identifier else {
+            return false
+        }
+        return isEnabledLaunchAgentPlist(
+            at: direct,
+            bundleURL: bundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: identifier
+        )
+    }
+
+    /// Returns whether any enabled `LaunchAgent` plist in the target directory launches the main app.
     public static func hasMatchingLaunchAgent(
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
@@ -60,6 +90,7 @@ public enum LaunchAtLogin {
         ).isEmpty
     }
 
+    /// Returns all enabled `LaunchAgent` plist URLs in the target directory that launch the main app.
     public static func matchingLaunchAgentURLs(
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
@@ -87,6 +118,7 @@ public enum LaunchAtLogin {
         return matches
     }
 
+    /// Inspects a `LaunchAgent` plist and returns whether it is enabled and targets the main application bundle or executable.
     private static func isEnabledLaunchAgentPlist(
         at url: URL,
         bundleURL: URL,
@@ -119,7 +151,7 @@ public enum LaunchAtLogin {
         }
         return programs.contains { arg in
             let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
-            return normalized == bundlePath || (execPath != nil && normalized == execPath) || normalized.hasPrefix(bundlePath + "/")
+            return normalized == bundlePath || (execPath != nil && normalized == execPath)
         }
     }
 
@@ -152,6 +184,7 @@ public enum LaunchAtLogin {
         )
     }
 
+    /// Enables or disables launching Nashi at login using `SMAppService` with a user `LaunchAgent` fallback.
     public static func setEnabled(
         _ enabled: Bool,
         launchMinimized: Bool = UserDefaults.standard.bool(forKey: minimizedPreferenceKey),
@@ -203,7 +236,7 @@ public enum LaunchAtLogin {
             } else {
                 try? serviceUnregister()
             }
-            let hadAgent = hasMatchingLaunchAgent(
+            let hadOwnedAgent = hasOwnedLaunchAgent(
                 bundleURL: bundleURL,
                 executableURL: executableURL,
                 bundleIdentifier: bundleIdentifier,
@@ -217,40 +250,48 @@ public enum LaunchAtLogin {
                     directory: launchAgentsDirectory
                 )
             } catch {
-                if unregisterError != nil || hadAgent {
+                if unregisterError != nil || hadOwnedAgent {
                     throw unregisterError ?? error
                 }
             }
-            if let unregisterError, !hadAgent {
+            if let unregisterError {
                 throw unregisterError
             }
         }
     }
 
+    /// Updates the Nashi-owned `LaunchAgent` plist when the `launchMinimized` preference changes.
+    @discardableResult
     public static func syncLaunchMinimized(
         _ launchMinimized: Bool,
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         launchAgentsDirectory: URL? = nil
-    ) {
-        guard hasMatchingLaunchAgent(
+    ) -> Error? {
+        guard hasOwnedLaunchAgent(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
             directory: launchAgentsDirectory
         ) else {
-            return
+            return nil
         }
-        try? writeLaunchAgent(
-            launchMinimized: launchMinimized,
-            bundleURL: bundleURL,
-            executableURL: executableURL,
-            bundleIdentifier: bundleIdentifier,
-            directory: launchAgentsDirectory
-        )
+        do {
+            try writeLaunchAgent(
+                launchMinimized: launchMinimized,
+                bundleURL: bundleURL,
+                executableURL: executableURL,
+                bundleIdentifier: bundleIdentifier,
+                directory: launchAgentsDirectory
+            )
+            return nil
+        } catch {
+            return error
+        }
     }
 
+    /// Writes the Nashi-owned `LaunchAgent` plist to the target `LaunchAgents` directory.
     public static func writeLaunchAgent(
         launchMinimized: Bool,
         bundleURL: URL = Bundle.main.bundleURL,
@@ -282,20 +323,25 @@ public enum LaunchAtLogin {
         try data.write(to: agentURL, options: .atomic)
     }
 
+    /// Removes only the Nashi-owned `LaunchAgent` plist (`<bundleIdentifier>.plist` with matching `Label`).
     public static func removeLaunchAgent(
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         directory: URL? = nil
     ) throws {
-        let urls = matchingLaunchAgentURLs(
-            bundleURL: bundleURL,
-            executableURL: executableURL,
-            bundleIdentifier: bundleIdentifier,
-            directory: directory
-        )
-        for url in urls where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !identifier.isEmpty,
+              let ownedURL = launchAgentURL(bundleIdentifier: identifier, directory: directory),
+              FileManager.default.fileExists(atPath: ownedURL.path) else {
+            return
         }
+        if let data = try? Data(contentsOf: ownedURL),
+           let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+           let label = plist["Label"] as? String,
+           label != identifier {
+            return
+        }
+        try FileManager.default.removeItem(at: ownedURL)
     }
 }

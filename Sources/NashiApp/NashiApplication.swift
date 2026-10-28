@@ -72,6 +72,7 @@ enum NashiApplication {
 @MainActor private final class FileArtworkSmokeRunner:NSObject,NSApplicationDelegate {
     let output:URL
     init(output:URL){self.output=output}
+    /// Configures menus, status bar item, shortcuts, and initial startup window visibility.
     func applicationDidFinishLaunching(_ notification:Notification) {
         Task {
             do {
@@ -85,6 +86,7 @@ enum NashiApplication {
 /// An explicit test-only invocation supplies a disposable, resizable cross-process target.
 @MainActor private final class WindowManagementFixtureDelegate:NSObject,NSApplicationDelegate {
     private var window:NSWindow?
+    /// Configures menus, status bar item, shortcuts, and initial startup window visibility.
     func applicationDidFinishLaunching(_ notification:Notification) {
         let w=NSWindow(contentRect:NSRect(x:220,y:200,width:620,height:420),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false)
         let key=CommandLine.arguments.firstIndex(of:"--minimum-window-width")
@@ -120,6 +122,7 @@ enum NashiApplication {
     var wheel:WheelController!
     var windowManagement:WindowManagementController!
 
+    /// Configures menus, status bar item, shortcuts, and initial startup window visibility.
     func applicationDidFinishLaunching(_ notification:Notification) {
         NashiAppearance.apply()
         UserDefaults.standard.register(defaults:["enabled":true,"reveal":true,"sound":true,LaunchAtLogin.minimizedPreferenceKey:false,"convertKey":"shift","toolsKey":"command","actionsKey":"control","wheelScale":1.0,"windowManagementEnabled":true])
@@ -197,7 +200,7 @@ enum NashiApplication {
         state.onSuccess = { [weak self] notice in self?.progressToast.dismiss();self?.successToast.show(notice) }
         let loginLaunch=NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword:keyAELaunchedAsLogInItem)?.booleanValue ?? false
         let launchMinimized=UserDefaults.standard.bool(forKey:LaunchAtLogin.minimizedPreferenceKey)
-        if !loginLaunch,!launchMinimized,!CommandLine.arguments.contains("--background") {
+        if (!loginLaunch || !launchMinimized) && !CommandLine.arguments.contains("--background") {
             if UserDefaults.standard.bool(forKey:"hasCompletedWelcome") { showHome() } else { showWelcome() }
         }
         UserDefaults.standard.set(true,forKey:"hasOpened")

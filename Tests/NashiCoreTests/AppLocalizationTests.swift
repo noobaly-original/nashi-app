@@ -2,6 +2,7 @@ import XCTest
 @testable import NashiCore
 
 final class AppLocalizationTests:XCTestCase {
+    /// Verifies that all tool titles, window placement titles, and key settings strings have Turkish translations.
     func testEveryToolAndWindowPlacementHasTurkishCopy() {
         for source in Array(FeatureCatalog.toolNames.values)+ToolKind.allCases.map(\.title)+WindowPlacement.allCases.map(\.title) {
             XCTAssertNotEqual(AppLocalization.text(source,language:"tr"),source,source)

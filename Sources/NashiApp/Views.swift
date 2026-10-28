@@ -61,7 +61,10 @@ struct SettingsView:View {
         .onAppear(perform:readLaunchStatus)
         .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in readLaunchStatus() }
         .onReceive(NotificationCenter.default.publisher(for:.showUpdateSettings)) { _ in section = .updates }
-        .onChange(of:launchMinimized) { LaunchAtLogin.syncLaunchMinimized($0) }
+        .onChange(of:launchMinimized) {
+            if let error=LaunchAtLogin.syncLaunchMinimized($0) { launchError=error.localizedDescription }
+            else { launchError=nil }
+        }
         .onChange(of:feedback) { UserDefaults.standard.set($0,forKey:"sound") }
         .onChange(of:appAppearance) { NashiAppearance.apply($0) }
         .onChange(of:appLanguage) { _ in NotificationCenter.default.post(name:.nashiLanguageChanged,object:nil) }
@@ -171,10 +174,12 @@ struct SettingsView:View {
     private func shortcut(_ wheel:WheelShortcut)->Binding<UInt> {
         Binding(get:{ModifierPreferences.chord(for:wheel).rawValue},set:{if ModifierPreferences.set(.init(rawValue:$0),for:wheel) { shortcutsRevision += 1 }})
     }
+    /// Refreshes the launch-at-login toggle state from the current system and LaunchAgent status.
     private func readLaunchStatus() {
         let status=LaunchAtLogin.status()
         launch=status.isEnabled;launchNeedsApproval=status.needsApproval;launchUnavailable=status.isUnavailable
     }
+    /// Applies a new launch-at-login preference and records any registration error.
     private func updateLaunch(_ value:Bool) {
         do { try LaunchAtLogin.setEnabled(value,launchMinimized:launchMinimized);launchError=nil } catch { launchError=error.localizedDescription }
         readLaunchStatus()

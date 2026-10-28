@@ -116,6 +116,7 @@ struct WelcomeView:View {
         }
     }
 
+    /// Refreshes the launch-at-login toggle state from the current system and LaunchAgent status.
     private func readLaunchStatus() {
         let status = LaunchAtLogin.status()
         launchAtLogin = status.isEnabled
@@ -123,6 +124,7 @@ struct WelcomeView:View {
         launchUnavailable = status.isUnavailable
     }
 
+    /// Applies a new launch-at-login preference and records any registration error.
     private func updateLaunch(_ value: Bool) {
         do {
             try LaunchAtLogin.setEnabled(value)
