@@ -31,6 +31,42 @@ final class LaunchAtLoginTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// Verifies window visibility decisions across manual launches, login launches, and the `launchMinimized` setting.
+    func testWindowOpenDecisionForManualAndLoginLaunches() {
+        XCTAssertTrue(LaunchAtLogin.isLaunchMinimizedDefault, "Launch minimized defaults to true so login launches remain in the menu bar as on main")
+
+        let suiteName = "test-launch-minimized-" + UUID().uuidString
+        let mockDefaults = UserDefaults(suiteName: suiteName)!
+        defer { mockDefaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(LaunchAtLogin.isLaunchMinimized(userDefaults: mockDefaults), "When unset in UserDefaults, isLaunchMinimized defaults to true")
+
+        mockDefaults.set(false, forKey: LaunchAtLogin.minimizedPreferenceKey)
+        XCTAssertFalse(LaunchAtLogin.isLaunchMinimized(userDefaults: mockDefaults))
+
+        mockDefaults.set(true, forKey: LaunchAtLogin.minimizedPreferenceKey)
+        XCTAssertTrue(LaunchAtLogin.isLaunchMinimized(userDefaults: mockDefaults))
+
+        // Manual launches from Finder or Dock must ALWAYS open the window regardless of launchMinimized.
+        XCTAssertTrue(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: false, isBackgroundArgument: false, launchMinimized: true),
+                      "Manual launch must open the window even when launchMinimized is true")
+        XCTAssertTrue(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: false, isBackgroundArgument: false, launchMinimized: false),
+                      "Manual launch must open the window when launchMinimized is false")
+
+        // Login launches (via SMAppService) must stay in the menu bar when launchMinimized is true (default).
+        XCTAssertFalse(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: true, isBackgroundArgument: false, launchMinimized: true),
+                       "Login launch with launchMinimized=true must remain minimized in the menu bar")
+        // Login launches open a window only when launchMinimized is explicitly false.
+        XCTAssertTrue(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: true, isBackgroundArgument: false, launchMinimized: false),
+                      "Login launch with launchMinimized=false must open the window")
+
+        // Background launches (via LaunchAgent fallback argument) follow the same rule.
+        XCTAssertFalse(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: false, isBackgroundArgument: true, launchMinimized: true),
+                       "Background launch with launchMinimized=true must remain minimized in the menu bar")
+        XCTAssertTrue(LaunchAtLogin.shouldOpenWindow(isLoginLaunch: false, isBackgroundArgument: true, launchMinimized: false),
+                      "Background launch with launchMinimized=false must open the window")
+    }
+
     /// Verifies that `SMAppService.Status.notFound` does not mark a valid `.app` bundle unavailable.
     func testNotFoundServiceStatusDoesNotMarkAppBundleUnavailable() {
         let status = LaunchAtLogin.status(
@@ -38,7 +74,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertFalse(status.isUnavailable, "SMAppService .notFound is the normal pre-registration or BlockBlock/LaunchAgent state and must not disable Launch at login for an .app bundle")
         XCTAssertFalse(status.isEnabled)
@@ -53,7 +89,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory,
+            directory: temporaryDirectory,
             serviceStatus: { .notFound },
             serviceRegister: {}
         )
@@ -63,7 +99,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertTrue(status.isEnabled)
         XCTAssertFalse(status.isUnavailable)
@@ -82,7 +118,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertNil(syncError)
         let updatedData = try Data(contentsOf: plistURL)
@@ -95,7 +131,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory,
+            directory: temporaryDirectory,
             serviceStatus: { .notFound },
             serviceUnregister: {}
         )
@@ -120,7 +156,7 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertFalse(helperStatus.isEnabled, "A LaunchAgent targeting a helper inside the bundle must not mark the main app as enabled")
 
@@ -138,16 +174,85 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertTrue(externalStatus.isEnabled, "An external LaunchAgent targeting the main executable is recognized as enabled in read-only status")
+        XCTAssertTrue(externalStatus.isManagedExternally, "An external LaunchAgent with a different label is marked as managed externally")
+
+        // Attempting to disable launch at login when only an external agent exists must throw an unmanaged agent error and preserve the external plist.
+        XCTAssertThrowsError(try LaunchAtLogin.setEnabled(
+            false,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: temporaryDirectory,
+            serviceStatus: { .notFound },
+            serviceRegister: {},
+            serviceUnregister: {}
+        )) { error in
+            XCTAssertEqual(error as? LaunchAtLoginError, .unmanagedLaunchAgentActive)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: externalMainPlistURL.path), "Disabling must not delete external LaunchAgents")
+
+        // Secondary command line argument matches (e.g. ditto or cp taking Nashi.app as an argument) must NOT match as active.
+        let dittoPlistURL = temporaryDirectory.appendingPathComponent("backup.ditto.plist")
+        let dittoPlist: [String: Any] = [
+            "Label": "backup.ditto",
+            "ProgramArguments": ["/usr/bin/ditto", appBundleURL.path, "/Volumes/Backup/Nashi.app"],
+            "RunAtLoad": true
+        ]
+        let dittoData = try PropertyListSerialization.data(fromPropertyList: dittoPlist, format: .xml, options: 0)
+        try dittoData.write(to: dittoPlistURL)
+
+        // Standard macOS `open` commands targeting the app bundle or bundle identifier MUST be recognized as launch at login.
+        let openPlistURL = temporaryDirectory.appendingPathComponent("open.launcher.plist")
+        let openPlist: [String: Any] = [
+            "Label": "open.launcher",
+            "ProgramArguments": ["/usr/bin/open", "-a", appBundleURL.path],
+            "RunAtLoad": true
+        ]
+        let openData = try PropertyListSerialization.data(fromPropertyList: openPlist, format: .xml, options: 0)
+        try openData.write(to: openPlistURL)
+
+        let openIdentifierPlistURL = temporaryDirectory.appendingPathComponent("open.id.launcher.plist")
+        let openIdPlist: [String: Any] = [
+            "Label": "open.id.launcher",
+            "ProgramArguments": ["open", "-b", "local.tangerine.replica"],
+            "RunAtLoad": true
+        ]
+        let openIdData = try PropertyListSerialization.data(fromPropertyList: openIdPlist, format: .xml, options: 0)
+        try openIdData.write(to: openIdentifierPlistURL)
+
+        let isolatedDir = temporaryDirectory.appendingPathComponent("ditto_only", isDirectory: true)
+        try FileManager.default.createDirectory(at: isolatedDir, withIntermediateDirectories: true)
+        try dittoData.write(to: isolatedDir.appendingPathComponent("backup.ditto.plist"))
+        let dittoStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: isolatedDir
+        )
+        XCTAssertFalse(dittoStatus.isEnabled, "A LaunchAgent invoking ditto with the app bundle as an argument must not be recognized as launch at login")
+
+        let openIsolatedDir = temporaryDirectory.appendingPathComponent("open_only", isDirectory: true)
+        try FileManager.default.createDirectory(at: openIsolatedDir, withIntermediateDirectories: true)
+        try openData.write(to: openIsolatedDir.appendingPathComponent("open.launcher.plist"))
+        let openStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: openIsolatedDir
+        )
+        XCTAssertTrue(openStatus.isEnabled, "A LaunchAgent invoking open targeting the app bundle must be recognized as launch at login")
 
         XCTAssertNil(LaunchAtLogin.syncLaunchMinimized(
             true,
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         ))
         let ownedURL = try XCTUnwrap(LaunchAtLogin.launchAgentURL(
             bundleIdentifier: "local.tangerine.replica",

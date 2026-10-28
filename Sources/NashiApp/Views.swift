@@ -24,7 +24,7 @@ struct SettingsView:View {
     @State private var launchNeedsApproval=false
     @State private var launchUnavailable=false
     @State private var launchError:String?
-    @AppStorage(LaunchAtLogin.minimizedPreferenceKey) private var launchMinimized=false
+    @AppStorage(LaunchAtLogin.minimizedPreferenceKey) private var launchMinimized=LaunchAtLogin.isLaunchMinimizedDefault
     @AppStorage("reduceAnimations") private var reduceAnimations=false
     @AppStorage("appAppearance") private var appAppearance="system"
     @AppStorage("appLanguage") private var appLanguage="en"

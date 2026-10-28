@@ -6,18 +6,69 @@ public struct LaunchAtLoginStatus: Equatable {
     public let isEnabled: Bool
     public let needsApproval: Bool
     public let isUnavailable: Bool
+    public let isManagedExternally: Bool
 
     /// Creates a new launch-at-login status value.
-    public init(isEnabled: Bool, needsApproval: Bool, isUnavailable: Bool) {
+    public init(
+        isEnabled: Bool,
+        needsApproval: Bool,
+        isUnavailable: Bool,
+        isManagedExternally: Bool = false
+    ) {
         self.isEnabled = isEnabled
         self.needsApproval = needsApproval
         self.isUnavailable = isUnavailable
+        self.isManagedExternally = isManagedExternally
+    }
+}
+
+/// Errors encountered during launch-at-login registration or unregistration.
+public enum LaunchAtLoginError: LocalizedError, Equatable {
+    case unmanagedLaunchAgentActive
+    case foreignFileExists
+
+    public var errorDescription: String? {
+        switch self {
+        case .unmanagedLaunchAgentActive:
+            return "Startup is managed externally (e.g. by BlockBlock or a custom LaunchAgent). Please disable it in that tool."
+        case .foreignFileExists:
+            return "A LaunchAgent plist with this identifier already exists and belongs to another application."
+        }
     }
 }
 
 /// Manages launch-at-login registration across `SMAppService` and the user `LaunchAgent` fallback.
 public enum LaunchAtLogin {
     public static let minimizedPreferenceKey = "launchMinimized"
+
+    /// Returns the default state for the `launchMinimized` preference (`true`).
+    public static var isLaunchMinimizedDefault: Bool { true }
+
+    /// Returns whether launching minimized is enabled, defaulting to `true` when unset.
+    public static func isLaunchMinimized(userDefaults: UserDefaults = .standard) -> Bool {
+        if userDefaults.object(forKey: minimizedPreferenceKey) == nil {
+            return isLaunchMinimizedDefault
+        }
+        return userDefaults.bool(forKey: minimizedPreferenceKey)
+    }
+
+    /// Determines whether the main window should open on application launch.
+    ///
+    /// Manual launches from Finder or Dock always open the window.
+    /// Login launches (via `SMAppService` or `--background`) stay in the menu bar
+    /// by default when `launchMinimized` is enabled (`true`), opening a window only
+    /// when `launchMinimized` is explicitly disabled (`false`).
+    public static func shouldOpenWindow(
+        isLoginLaunch: Bool,
+        isBackgroundArgument: Bool,
+        launchMinimized: Bool = isLaunchMinimized()
+    ) -> Bool {
+        let isLoginOrBackground = isLoginLaunch || isBackgroundArgument
+        if !isLoginOrBackground {
+            return true
+        }
+        return !launchMinimized
+    }
 
     /// Returns whether the given bundle URL and identifier represent a valid `.app` bundle.
     public static func isSupportedAppBundle(
@@ -57,13 +108,11 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil,
-        launchAgentsDirectory: URL? = nil
+        directory: URL? = nil
     ) -> Bool {
-        let base = directory ?? launchAgentsDirectory
         guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty,
-              let direct = launchAgentURL(bundleIdentifier: identifier, directory: base),
+              let direct = launchAgentURL(bundleIdentifier: identifier, directory: directory),
               let data = try? Data(contentsOf: direct),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               (plist["Label"] as? String) == identifier else {
@@ -139,56 +188,100 @@ public enum LaunchAtLogin {
         }
         let bundlePath = bundleURL.standardizedFileURL.path
         let execPath = executableURL?.standardizedFileURL.path
-        var programs: [String] = []
+
+        // Check explicit Program
         if let program = plist["Program"] as? String {
-            programs.append(program)
+            let normalized = URL(fileURLWithPath: program).standardizedFileURL.path
+            if normalized == bundlePath || (execPath != nil && normalized == execPath) {
+                return true
+            }
         }
-        if let arguments = plist["ProgramArguments"] as? [String] {
-            programs.append(contentsOf: arguments)
+
+        // Check ProgramArguments
+        guard let arguments = plist["ProgramArguments"] as? [String], !arguments.isEmpty else {
+            return false
         }
-        return programs.contains { arg in
-            let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
-            return normalized == bundlePath || (execPath != nil && normalized == execPath)
+
+        // The first argument is the command or executable being launched.
+        let firstArg = arguments[0]
+        let firstNormalized = URL(fileURLWithPath: firstArg).standardizedFileURL.path
+        if firstNormalized == bundlePath || (execPath != nil && firstNormalized == execPath) {
+            return true
         }
+
+        // Support standard macOS `open` launches:
+        // open /Applications/Nashi.app
+        // open -a /Applications/Nashi.app
+        // open -b <bundleIdentifier>
+        let commandName = URL(fileURLWithPath: firstArg).lastPathComponent.lowercased()
+        if commandName == "open" {
+            let subsequent = Array(arguments.dropFirst())
+            for (index, arg) in subsequent.enumerated() {
+                let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
+                if normalized == bundlePath || (execPath != nil && normalized == execPath) {
+                    return true
+                }
+                if (arg == "-b" || arg == "--bundle-identifier"), index + 1 < subsequent.count {
+                    let next = subsequent[index + 1]
+                    if let identifier = bundleIdentifier, next == identifier {
+                        return true
+                    }
+                }
+            }
+        }
+
+        return false
     }
 
     /// Reads the current launch-at-login status.
-    /// Note: `SMAppService.mainApp.status == .notFound` is the normal macOS pre-registration
-    /// baseline state (and also occurs when a copy is signed without an Apple Team ID or managed
-    /// via a LaunchAgent / BlockBlock), so `.notFound` must not mark a valid `.app` bundle unavailable.
+    /// Note: Signed release builds manage login items via `SMAppService.mainApp` (status `.enabled`,
+    /// `.requiresApproval`, or `.notRegistered`). The user `LaunchAgent` fallback is checked when
+    /// `SMAppService` reports `.notFound` (e.g. ad-hoc or development copies, or persistence
+    /// managed through BlockBlock), preventing false "unavailable" states.
     public static func status(
         serviceStatus: SMAppService.Status = SMAppService.mainApp.status,
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        launchAgentsDirectory: URL? = nil
+        directory: URL? = nil
     ) -> LaunchAtLoginStatus {
         let supportedBundle = isSupportedAppBundle(bundleURL: bundleURL, bundleIdentifier: bundleIdentifier)
         let agentEnabled = hasMatchingLaunchAgent(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
-            directory: launchAgentsDirectory
+            directory: directory
+        )
+        let ownedAgent = hasOwnedLaunchAgent(
+            bundleURL: bundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: bundleIdentifier,
+            directory: directory
         )
         let serviceEnabled = serviceStatus == .enabled || serviceStatus == .requiresApproval
         let isEnabled = serviceEnabled || agentEnabled
         let needsApproval = serviceStatus == .requiresApproval && !agentEnabled
         let isUnavailable = !supportedBundle && !isEnabled
+        let isManagedExternally = agentEnabled && !ownedAgent && !serviceEnabled
         return LaunchAtLoginStatus(
             isEnabled: isEnabled,
             needsApproval: needsApproval,
-            isUnavailable: isUnavailable
+            isUnavailable: isUnavailable,
+            isManagedExternally: isManagedExternally
         )
     }
 
     /// Enables or disables launching Nashi at login using `SMAppService` with a user `LaunchAgent` fallback.
+    ///
+    /// Signed release builds attempt `SMAppService.mainApp.register()` first; only if `SMAppService`
+    /// cannot be registered does the mechanism fall back to a user `LaunchAgent`.
     public static func setEnabled(
         _ enabled: Bool,
-        launchMinimized: Bool = UserDefaults.standard.bool(forKey: minimizedPreferenceKey),
+        launchMinimized: Bool = isLaunchMinimized(),
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        launchAgentsDirectory: URL? = nil,
+        directory: URL? = nil,
         serviceStatus: () -> SMAppService.Status = { SMAppService.mainApp.status },
         serviceRegister: () throws -> Void = { try SMAppService.mainApp.register() },
         serviceUnregister: () throws -> Void = { try SMAppService.mainApp.unregister() }
@@ -206,7 +299,7 @@ public enum LaunchAtLogin {
                     bundleURL: bundleURL,
                     executableURL: executableURL,
                     bundleIdentifier: bundleIdentifier,
-                    directory: launchAgentsDirectory
+                    directory: directory
                 )
                 return
             }
@@ -216,7 +309,7 @@ public enum LaunchAtLogin {
                     bundleURL: bundleURL,
                     executableURL: executableURL,
                     bundleIdentifier: bundleIdentifier,
-                    directory: launchAgentsDirectory
+                    directory: directory
                 )
             } catch {
                 throw registerError ?? error
@@ -237,14 +330,14 @@ public enum LaunchAtLogin {
                 bundleURL: bundleURL,
                 executableURL: executableURL,
                 bundleIdentifier: bundleIdentifier,
-                directory: launchAgentsDirectory
+                directory: directory
             )
             do {
                 try removeLaunchAgent(
                     bundleURL: bundleURL,
                     executableURL: executableURL,
                     bundleIdentifier: bundleIdentifier,
-                    directory: launchAgentsDirectory
+                    directory: directory
                 )
             } catch {
                 if unregisterError != nil || hadOwnedAgent {
@@ -253,6 +346,14 @@ public enum LaunchAtLogin {
             }
             if let unregisterError {
                 throw unregisterError
+            }
+            if hasMatchingLaunchAgent(
+                bundleURL: bundleURL,
+                executableURL: executableURL,
+                bundleIdentifier: bundleIdentifier,
+                directory: directory
+            ) {
+                throw LaunchAtLoginError.unmanagedLaunchAgentActive
             }
         }
     }
@@ -264,13 +365,13 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        launchAgentsDirectory: URL? = nil
+        directory: URL? = nil
     ) -> Error? {
         guard hasOwnedLaunchAgent(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
-            directory: launchAgentsDirectory
+            directory: directory
         ) else {
             return nil
         }
@@ -280,7 +381,7 @@ public enum LaunchAtLogin {
                 bundleURL: bundleURL,
                 executableURL: executableURL,
                 bundleIdentifier: bundleIdentifier,
-                directory: launchAgentsDirectory
+                directory: directory
             )
             return nil
         } catch {
@@ -294,11 +395,9 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil,
-        launchAgentsDirectory: URL? = nil
+        directory: URL? = nil
     ) throws {
-        let base = directory ?? launchAgentsDirectory
-        guard let agentURL = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: base),
+        guard let agentURL = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: directory),
               let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty else {
             throw CocoaError(.fileNoSuchFile)
@@ -308,7 +407,7 @@ public enum LaunchAtLogin {
                   let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
                   let label = plist["Label"] as? String,
                   label == identifier else {
-                throw CocoaError(.fileWriteNoPermission)
+                throw LaunchAtLoginError.foreignFileExists
             }
         }
         let resolvedExecutable = executableURL ?? bundleURL
@@ -335,13 +434,11 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil,
-        launchAgentsDirectory: URL? = nil
+        directory: URL? = nil
     ) throws {
-        let base = directory ?? launchAgentsDirectory
         guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty,
-              let ownedURL = launchAgentURL(bundleIdentifier: identifier, directory: base),
+              let ownedURL = launchAgentURL(bundleIdentifier: identifier, directory: directory),
               FileManager.default.fileExists(atPath: ownedURL.path) else {
             return
         }
