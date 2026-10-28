@@ -1000,6 +1000,7 @@
 "LARGE · 2560 PX LONGEST EDGE" = "BÜYÜK · UZUN KENAR 2560 PX";
 "LAUNCH AT LOGIN" = "OTURUM AÇILDIĞINDA BAŞLAT";
 "LAUNCH AT LOGIN IS UNAVAILABLE FOR THIS COPY." = "BU KOPYADA OTOMATİK BAŞLATMA KULLANILAMIYOR.";
+"LAUNCH MINIMIZED" = "KÜÇÜLTÜLMÜŞ OLARAK BAŞLAT";
 "LAYOUT" = "DÜZEN";
 "LEFT" = "SOL";
 "LEFT HALF" = "SOL YARI";
@@ -1028,6 +1029,7 @@
 "Large · 2560 px longest edge" = "Büyük · uzun kenar 2560 px";
 "Launch at login" = "Oturum açıldığında başlat";
 "Launch at login is unavailable for this copy." = "Bu kopyada otomatik başlatma kullanılamıyor.";
+"Launch minimized" = "Küçültülmüş olarak başlat";
 "Layout" = "Düzen";
 "Left" = "Sol";
 "Left half" = "Sol yarı";

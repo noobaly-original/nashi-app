@@ -1000,6 +1000,7 @@
 "LARGE · 2560 PX LONGEST EDGE" = "LARGE · 2560 PX LONGEST EDGE";
 "LAUNCH AT LOGIN" = "LAUNCH AT LOGIN";
 "LAUNCH AT LOGIN IS UNAVAILABLE FOR THIS COPY." = "LAUNCH AT LOGIN IS UNAVAILABLE FOR THIS COPY.";
+"LAUNCH MINIMIZED" = "LAUNCH MINIMIZED";
 "LAYOUT" = "LAYOUT";
 "LEFT" = "LEFT";
 "LEFT HALF" = "LEFT HALF";
@@ -1028,6 +1029,7 @@
 "Large · 2560 px longest edge" = "Large · 2560 px longest edge";
 "Launch at login" = "Launch at login";
 "Launch at login is unavailable for this copy." = "Launch at login is unavailable for this copy.";
+"Launch minimized" = "Launch minimized";
 "Layout" = "Layout";
 "Left" = "Left";
 "Left half" = "Left half";

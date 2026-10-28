@@ -7,6 +7,7 @@ final class AppLocalizationTests:XCTestCase {
             XCTAssertNotEqual(AppLocalization.text(source,language:"tr"),source,source)
         }
         XCTAssertEqual(AppLocalization.text("Language",language:"tr"),"Dil")
+        XCTAssertEqual(AppLocalization.text("Launch minimized",language:"tr"),"Küçültülmüş olarak başlat")
         XCTAssertEqual(AppLocalization.text("Library",language:"tr"),"Kitaplık")
         XCTAssertEqual(AppLocalization.text("READ QR CODES",language:"tr"),"QR KODLARINI OKU")
         XCTAssertEqual(AppLocalization.text("Resize Image".uppercased(),language:"tr"),"GÖRSELİ BOYUTLANDIR")

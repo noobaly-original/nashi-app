@@ -122,7 +122,7 @@ enum NashiApplication {
 
     func applicationDidFinishLaunching(_ notification:Notification) {
         NashiAppearance.apply()
-        UserDefaults.standard.register(defaults:["enabled":true,"reveal":true,"sound":true,"convertKey":"shift","toolsKey":"command","actionsKey":"control","wheelScale":1.0,"windowManagementEnabled":true])
+        UserDefaults.standard.register(defaults:["enabled":true,"reveal":true,"sound":true,LaunchAtLogin.minimizedPreferenceKey:false,"convertKey":"shift","toolsKey":"command","actionsKey":"control","wheelScale":1.0,"windowManagementEnabled":true])
         let mainMenu=NSMenu();let appMenu=NSMenu()
         appMenu.addItem(withTitle:"Home",action:#selector(showHome),keyEquivalent:"1")
         appMenu.addItem(withTitle:"Library",action:#selector(showLibrary),keyEquivalent:"2")
@@ -196,7 +196,8 @@ enum NashiApplication {
         state.onJobStarted = { [weak self] in self?.successToast.dismiss();self?.showProgress() }
         state.onSuccess = { [weak self] notice in self?.progressToast.dismiss();self?.successToast.show(notice) }
         let loginLaunch=NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword:keyAELaunchedAsLogInItem)?.booleanValue ?? false
-        if !loginLaunch,!CommandLine.arguments.contains("--background") {
+        let launchMinimized=UserDefaults.standard.bool(forKey:LaunchAtLogin.minimizedPreferenceKey)
+        if !loginLaunch,!launchMinimized,!CommandLine.arguments.contains("--background") {
             if UserDefaults.standard.bool(forKey:"hasCompletedWelcome") { showHome() } else { showWelcome() }
         }
         UserDefaults.standard.set(true,forKey:"hasOpened")

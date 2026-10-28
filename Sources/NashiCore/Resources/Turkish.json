@@ -24,6 +24,7 @@
   "Glass": "Cam",
   "Solid": "Düz",
   "Launch at login": "Oturum açıldığında başlat",
+  "Launch minimized": "Küçültülmüş olarak başlat",
   "Launch at login is unavailable for this copy.": "Bu kopyada otomatik başlatma kullanılamıyor.",
   "Allow Nashi in macOS Login Items.": "macOS Giriş Öğeleri bölümünden Nashi'ye izin ver.",
   "Open Login Items": "Giriş Öğelerini Aç",
