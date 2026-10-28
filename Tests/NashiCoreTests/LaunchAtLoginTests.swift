@@ -159,8 +159,36 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            launchAgentsDirectory: temporaryDirectory
+            directory: temporaryDirectory
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: externalMainPlistURL.path), "removeLaunchAgent must not delete external LaunchAgent plists")
+
+        // Unparseable / corrupt files at the owned path must be preserved rather than deleted.
+        let corruptOwnedURL = temporaryDirectory.appendingPathComponent("corrupt.app.plist")
+        try "not a valid plist content".write(to: corruptOwnedURL, atomically: true, encoding: .utf8)
+        try LaunchAtLogin.removeLaunchAgent(
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "corrupt.app",
+            directory: temporaryDirectory
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: corruptOwnedURL.path), "removeLaunchAgent must preserve unparseable plists")
+
+        // writeLaunchAgent must not overwrite a foreign plist if one exists at the destination.
+        let foreignURL = temporaryDirectory.appendingPathComponent("alien.target.plist")
+        let foreignPlist: [String: Any] = [
+            "Label": "someone.else.tool",
+            "ProgramArguments": ["/bin/echo"]
+        ]
+        let foreignData = try PropertyListSerialization.data(fromPropertyList: foreignPlist, format: .xml, options: 0)
+        try foreignData.write(to: foreignURL)
+        XCTAssertThrowsError(try LaunchAtLogin.writeLaunchAgent(
+            launchMinimized: false,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "alien.target",
+            directory: temporaryDirectory
+        ), "writeLaunchAgent must refuse to overwrite an existing plist with non-matching Label")
+        XCTAssertEqual(try Data(contentsOf: foreignURL), foreignData, "Existing foreign plist data must remain intact")
     }
 }

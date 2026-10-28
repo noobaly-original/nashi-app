@@ -57,11 +57,13 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        launchAgentsDirectory: URL? = nil
     ) -> Bool {
+        let base = directory ?? launchAgentsDirectory
         guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty,
-              let direct = launchAgentURL(bundleIdentifier: identifier, directory: directory),
+              let direct = launchAgentURL(bundleIdentifier: identifier, directory: base),
               let data = try? Data(contentsOf: direct),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               (plist["Label"] as? String) == identifier else {
@@ -135,11 +137,6 @@ public enum LaunchAtLogin {
         if let runAtLoad = plist["RunAtLoad"] as? Bool, !runAtLoad {
             return false
         }
-        if let identifier = bundleIdentifier,
-           let label = plist["Label"] as? String,
-           label == identifier {
-            return true
-        }
         let bundlePath = bundleURL.standardizedFileURL.path
         let execPath = executableURL?.standardizedFileURL.path
         var programs: [String] = []
@@ -149,10 +146,18 @@ public enum LaunchAtLogin {
         if let arguments = plist["ProgramArguments"] as? [String] {
             programs.append(contentsOf: arguments)
         }
-        return programs.contains { arg in
+        guard programs.contains(where: { arg in
             let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
             return normalized == bundlePath || (execPath != nil && normalized == execPath)
+        }) else {
+            return false
         }
+        if let identifier = bundleIdentifier,
+           let label = plist["Label"] as? String,
+           !label.isEmpty {
+            return label == identifier
+        }
+        return true
     }
 
     /// Reads the current launch-at-login status.
@@ -297,12 +302,22 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        launchAgentsDirectory: URL? = nil
     ) throws {
-        guard let agentURL = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: directory),
+        let base = directory ?? launchAgentsDirectory
+        guard let agentURL = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: base),
               let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty else {
             throw CocoaError(.fileNoSuchFile)
+        }
+        if FileManager.default.fileExists(atPath: agentURL.path) {
+            guard let data = try? Data(contentsOf: agentURL),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                  let label = plist["Label"] as? String,
+                  label == identifier else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
         }
         let resolvedExecutable = executableURL ?? bundleURL
             .appendingPathComponent("Contents", isDirectory: true)
@@ -328,18 +343,20 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        launchAgentsDirectory: URL? = nil
     ) throws {
+        let base = directory ?? launchAgentsDirectory
         guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty,
-              let ownedURL = launchAgentURL(bundleIdentifier: identifier, directory: directory),
+              let ownedURL = launchAgentURL(bundleIdentifier: identifier, directory: base),
               FileManager.default.fileExists(atPath: ownedURL.path) else {
             return
         }
-        if let data = try? Data(contentsOf: ownedURL),
-           let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-           let label = plist["Label"] as? String,
-           label != identifier {
+        guard let data = try? Data(contentsOf: ownedURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let label = plist["Label"] as? String,
+              label == identifier else {
             return
         }
         try FileManager.default.removeItem(at: ownedURL)
