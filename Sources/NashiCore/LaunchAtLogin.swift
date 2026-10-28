@@ -125,7 +125,7 @@ public enum LaunchAtLogin {
         at url: URL,
         bundleURL: URL,
         executableURL: URL?,
-        bundleIdentifier: String?
+        bundleIdentifier: String? = nil
     ) -> Bool {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
@@ -146,18 +146,10 @@ public enum LaunchAtLogin {
         if let arguments = plist["ProgramArguments"] as? [String] {
             programs.append(contentsOf: arguments)
         }
-        guard programs.contains(where: { arg in
+        return programs.contains { arg in
             let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
             return normalized == bundlePath || (execPath != nil && normalized == execPath)
-        }) else {
-            return false
         }
-        if let identifier = bundleIdentifier,
-           let label = plist["Label"] as? String,
-           !label.isEmpty {
-            return label == identifier
-        }
-        return true
     }
 
     /// Reads the current launch-at-login status.
