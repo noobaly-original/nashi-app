@@ -103,12 +103,68 @@ public enum LaunchAtLogin {
         return base.appendingPathComponent("\(identifier).plist", isDirectory: false)
     }
 
+    /// Determines whether a plist specifies a valid startup trigger (e.g. `RunAtLoad` or an active `KeepAlive`).
+    public static func hasStartupTrigger(_ plist: [String: Any]) -> Bool {
+        if let runAtLoad = plist["RunAtLoad"] as? Bool, runAtLoad {
+            return true
+        }
+        if let keepAlive = plist["KeepAlive"] as? Bool, keepAlive {
+            return true
+        }
+        if let keepAliveDict = plist["KeepAlive"] as? [String: Any] {
+            if let afterDemand = keepAliveDict["AfterInitialDemand"] as? Bool, afterDemand {
+                return false
+            }
+            return !keepAliveDict.isEmpty
+        }
+        return false
+    }
+
+    /// Checks whether launchd has a domain override disabling the specified service label.
+    public static func isServiceDisabledInLaunchd(
+        _ label: String,
+        domainOverrideChecker: ((String) -> Bool)? = nil
+    ) -> Bool {
+        if let domainOverrideChecker {
+            return domainOverrideChecker(label)
+        }
+        let uid = getuid()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print-disabled", "gui/\(uid)"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        let timeoutWorkItem = DispatchWorkItem {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: timeoutWorkItem)
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            timeoutWorkItem.cancel()
+            guard process.terminationStatus == 0 else { return false }
+            guard let output = String(data: data, encoding: .utf8) else { return false }
+            let pattern = "\"\(NSRegularExpression.escapedPattern(for: label))\"\\s*=>\\s*disabled"
+            return output.range(of: pattern, options: .regularExpression) != nil
+        } catch {
+            timeoutWorkItem.cancel()
+            return false
+        }
+    }
+
     /// Returns whether the Nashi-owned `LaunchAgent` plist exists and has a matching `Label`.
     public static func hasOwnedLaunchAgent(
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> Bool {
         guard let identifier = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
               !identifier.isEmpty,
@@ -122,7 +178,8 @@ public enum LaunchAtLogin {
             at: direct,
             bundleURL: bundleURL,
             executableURL: executableURL,
-            bundleIdentifier: identifier
+            bundleIdentifier: identifier,
+            isServiceDisabled: isServiceDisabled
         )
     }
 
@@ -131,13 +188,15 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> Bool {
         !matchingLaunchAgentURLs(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
-            directory: directory
+            directory: directory,
+            isServiceDisabled: isServiceDisabled
         ).isEmpty
     }
 
@@ -146,13 +205,33 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> [URL] {
         let base = directory ?? defaultLaunchAgentsDirectory()
         var matches: [URL] = []
-        if let direct = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: base),
-           isEnabledLaunchAgentPlist(at: direct, bundleURL: bundleURL, executableURL: executableURL, bundleIdentifier: bundleIdentifier) {
-            matches.append(direct)
+        var inspected: Set<URL> = []
+        var disabledCache: [String: Bool] = [:]
+        let cachedIsServiceDisabled: (String) -> Bool = { label in
+            if let cached = disabledCache[label] {
+                return cached
+            }
+            let res = isServiceDisabled(label)
+            disabledCache[label] = res
+            return res
+        }
+
+        if let direct = launchAgentURL(bundleIdentifier: bundleIdentifier, directory: base) {
+            inspected.insert(direct)
+            if isEnabledLaunchAgentPlist(
+                at: direct,
+                bundleURL: bundleURL,
+                executableURL: executableURL,
+                bundleIdentifier: bundleIdentifier,
+                isServiceDisabled: cachedIsServiceDisabled
+            ) {
+                matches.append(direct)
+            }
         }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: base,
@@ -161,8 +240,14 @@ public enum LaunchAtLogin {
         ) else {
             return matches
         }
-        for url in entries where url.pathExtension.lowercased() == "plist" && !matches.contains(url) {
-            if isEnabledLaunchAgentPlist(at: url, bundleURL: bundleURL, executableURL: executableURL, bundleIdentifier: bundleIdentifier) {
+        for url in entries where url.pathExtension.lowercased() == "plist" && !inspected.contains(url) {
+            if isEnabledLaunchAgentPlist(
+                at: url,
+                bundleURL: bundleURL,
+                executableURL: executableURL,
+                bundleIdentifier: bundleIdentifier,
+                isServiceDisabled: cachedIsServiceDisabled
+            ) {
                 matches.append(url)
             }
         }
@@ -174,7 +259,8 @@ public enum LaunchAtLogin {
         at url: URL,
         bundleURL: URL,
         executableURL: URL?,
-        bundleIdentifier: String? = nil
+        bundleIdentifier: String? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> Bool {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
@@ -183,9 +269,30 @@ public enum LaunchAtLogin {
         if let disabled = plist["Disabled"] as? Bool, disabled {
             return false
         }
-        if let runAtLoad = plist["RunAtLoad"] as? Bool, !runAtLoad {
+        guard hasStartupTrigger(plist) else {
             return false
         }
+        guard targetsApplication(
+            plist,
+            bundleURL: bundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: bundleIdentifier
+        ) else {
+            return false
+        }
+        if let label = plist["Label"] as? String, !label.isEmpty, isServiceDisabled(label) {
+            return false
+        }
+        return true
+    }
+
+    /// Returns whether the plist targets the main application bundle or executable.
+    private static func targetsApplication(
+        _ plist: [String: Any],
+        bundleURL: URL,
+        executableURL: URL?,
+        bundleIdentifier: String?
+    ) -> Bool {
         let bundlePath = bundleURL.standardizedFileURL.path
         let execPath = executableURL?.standardizedFileURL.path
 
@@ -195,41 +302,69 @@ public enum LaunchAtLogin {
             if normalized == bundlePath || (execPath != nil && normalized == execPath) {
                 return true
             }
+            let programName = URL(fileURLWithPath: program).lastPathComponent.lowercased()
+            if programName == "open", let arguments = plist["ProgramArguments"] as? [String] {
+                return isOpenCommandTargetingApp(Array(arguments.dropFirst()), bundlePath: bundlePath, execPath: execPath, bundleIdentifier: bundleIdentifier)
+            }
+            return false
         }
 
-        // Check ProgramArguments
+        // Check ProgramArguments when Program is not specified
         guard let arguments = plist["ProgramArguments"] as? [String], !arguments.isEmpty else {
             return false
         }
 
-        // The first argument is the command or executable being launched.
         let firstArg = arguments[0]
         let firstNormalized = URL(fileURLWithPath: firstArg).standardizedFileURL.path
         if firstNormalized == bundlePath || (execPath != nil && firstNormalized == execPath) {
             return true
         }
 
-        // Support standard macOS `open` launches:
-        // open /Applications/Nashi.app
-        // open -a /Applications/Nashi.app
-        // open -b <bundleIdentifier>
         let commandName = URL(fileURLWithPath: firstArg).lastPathComponent.lowercased()
         if commandName == "open" {
-            let subsequent = Array(arguments.dropFirst())
-            for (index, arg) in subsequent.enumerated() {
-                let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
-                if normalized == bundlePath || (execPath != nil && normalized == execPath) {
-                    return true
-                }
-                if (arg == "-b" || arg == "--bundle-identifier"), index + 1 < subsequent.count {
-                    let next = subsequent[index + 1]
-                    if let identifier = bundleIdentifier, next == identifier {
-                        return true
-                    }
-                }
-            }
+            return isOpenCommandTargetingApp(Array(arguments.dropFirst()), bundlePath: bundlePath, execPath: execPath, bundleIdentifier: bundleIdentifier)
         }
 
+        return false
+    }
+
+    /// Checks whether arguments passed to macOS `open` target the app bundle or executable.
+    private static func isOpenCommandTargetingApp(
+        _ arguments: [String],
+        bundlePath: String,
+        execPath: String?,
+        bundleIdentifier: String?
+    ) -> Bool {
+        let openOptions: [String]
+        if let argsIndex = arguments.firstIndex(of: "--args") {
+            openOptions = Array(arguments[..<argsIndex])
+        } else {
+            openOptions = arguments
+        }
+
+        // `open -R` / `open --reveal` reveals in Finder; it does not launch the app.
+        if openOptions.contains("-R") || openOptions.contains("--reveal") {
+            return false
+        }
+
+        if let index = openOptions.firstIndex(of: "-a") {
+            guard index + 1 < openOptions.count else { return false }
+            let target = openOptions[index + 1]
+            let applicationPath = URL(fileURLWithPath: target).standardizedFileURL.path
+            return applicationPath == bundlePath || (execPath != nil && applicationPath == execPath)
+        }
+        if let index = openOptions.firstIndex(where: {
+            $0 == "-b" || $0 == "--bundle-identifier"
+        }) {
+            guard index + 1 < openOptions.count else { return false }
+            return bundleIdentifier != nil && openOptions[index + 1] == bundleIdentifier
+        }
+        for arg in openOptions {
+            let normalized = URL(fileURLWithPath: arg).standardizedFileURL.path
+            if normalized == bundlePath || (execPath != nil && normalized == execPath) {
+                return true
+            }
+        }
         return false
     }
 
@@ -243,20 +378,32 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> LaunchAtLoginStatus {
         let supportedBundle = isSupportedAppBundle(bundleURL: bundleURL, bundleIdentifier: bundleIdentifier)
-        let agentEnabled = hasMatchingLaunchAgent(
-            bundleURL: bundleURL,
-            executableURL: executableURL,
-            bundleIdentifier: bundleIdentifier,
-            directory: directory
-        )
+        var disabledCache: [String: Bool] = [:]
+        let cachedIsServiceDisabled: (String) -> Bool = { label in
+            if let cached = disabledCache[label] {
+                return cached
+            }
+            let res = isServiceDisabled(label)
+            disabledCache[label] = res
+            return res
+        }
         let ownedAgent = hasOwnedLaunchAgent(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
-            directory: directory
+            directory: directory,
+            isServiceDisabled: cachedIsServiceDisabled
+        )
+        let agentEnabled = ownedAgent || hasMatchingLaunchAgent(
+            bundleURL: bundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: bundleIdentifier,
+            directory: directory,
+            isServiceDisabled: cachedIsServiceDisabled
         )
         let serviceEnabled = serviceStatus == .enabled || serviceStatus == .requiresApproval
         let isEnabled = serviceEnabled || agentEnabled
@@ -284,7 +431,8 @@ public enum LaunchAtLogin {
         directory: URL? = nil,
         serviceStatus: () -> SMAppService.Status = { SMAppService.mainApp.status },
         serviceRegister: () throws -> Void = { try SMAppService.mainApp.register() },
-        serviceUnregister: () throws -> Void = { try SMAppService.mainApp.unregister() }
+        serviceUnregister: () throws -> Void = { try SMAppService.mainApp.unregister() },
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) throws {
         if enabled {
             var registerError: Error?
@@ -330,7 +478,8 @@ public enum LaunchAtLogin {
                 bundleURL: bundleURL,
                 executableURL: executableURL,
                 bundleIdentifier: bundleIdentifier,
-                directory: directory
+                directory: directory,
+                isServiceDisabled: { _ in false }
             )
             do {
                 try removeLaunchAgent(
@@ -351,7 +500,8 @@ public enum LaunchAtLogin {
                 bundleURL: bundleURL,
                 executableURL: executableURL,
                 bundleIdentifier: bundleIdentifier,
-                directory: directory
+                directory: directory,
+                isServiceDisabled: isServiceDisabled
             ) {
                 throw LaunchAtLoginError.unmanagedLaunchAgentActive
             }
@@ -365,13 +515,15 @@ public enum LaunchAtLogin {
         bundleURL: URL = Bundle.main.bundleURL,
         executableURL: URL? = Bundle.main.executableURL,
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        directory: URL? = nil
+        directory: URL? = nil,
+        isServiceDisabled: @escaping (String) -> Bool = { isServiceDisabledInLaunchd($0) }
     ) -> Error? {
         guard hasOwnedLaunchAgent(
             bundleURL: bundleURL,
             executableURL: executableURL,
             bundleIdentifier: bundleIdentifier,
-            directory: directory
+            directory: directory,
+            isServiceDisabled: isServiceDisabled
         ) else {
             return nil
         }

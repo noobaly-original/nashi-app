@@ -204,6 +204,51 @@ final class LaunchAtLoginTests: XCTestCase {
         let dittoData = try PropertyListSerialization.data(fromPropertyList: dittoPlist, format: .xml, options: 0)
         try dittoData.write(to: dittoPlistURL)
 
+        // When explicit Program is specified (e.g. /usr/bin/ditto), ProgramArguments[0] pointing to Nashi must NOT be treated as executable.
+        let explicitProgramDittoURL = temporaryDirectory.appendingPathComponent("explicit.ditto.plist")
+        let explicitProgramDittoPlist: [String: Any] = [
+            "Label": "explicit.ditto",
+            "Program": "/usr/bin/ditto",
+            "ProgramArguments": [executableURL.path, "/Volumes/Backup/Nashi"],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: explicitProgramDittoPlist, format: .xml, options: 0).write(to: explicitProgramDittoURL)
+
+        // Triggerless plists (no RunAtLoad, no KeepAlive) must NOT be considered active launch-at-login agents.
+        let triggerlessPlistURL = temporaryDirectory.appendingPathComponent("triggerless.nashi.plist")
+        let triggerlessPlist: [String: Any] = [
+            "Label": "triggerless.nashi",
+            "ProgramArguments": [executableURL.path]
+        ]
+        try PropertyListSerialization.data(fromPropertyList: triggerlessPlist, format: .xml, options: 0).write(to: triggerlessPlistURL)
+
+        // Plists with KeepAlive=true must be considered active startup agents.
+        let keepAliveTruePlistURL = temporaryDirectory.appendingPathComponent("keepalive.true.plist")
+        let keepAliveTruePlist: [String: Any] = [
+            "Label": "keepalive.true",
+            "ProgramArguments": [executableURL.path],
+            "KeepAlive": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: keepAliveTruePlist, format: .xml, options: 0).write(to: keepAliveTruePlistURL)
+
+        // Plists with conditional KeepAlive (without AfterInitialDemand=true) must be recognized.
+        let keepAliveCondPlistURL = temporaryDirectory.appendingPathComponent("keepalive.cond.plist")
+        let keepAliveCondPlist: [String: Any] = [
+            "Label": "keepalive.cond",
+            "ProgramArguments": [executableURL.path],
+            "KeepAlive": ["SuccessfulExit": false]
+        ]
+        try PropertyListSerialization.data(fromPropertyList: keepAliveCondPlist, format: .xml, options: 0).write(to: keepAliveCondPlistURL)
+
+        // Plists with KeepAlive having AfterInitialDemand=true only run on-demand, not at login.
+        let keepAliveDemandPlistURL = temporaryDirectory.appendingPathComponent("keepalive.demand.plist")
+        let keepAliveDemandPlist: [String: Any] = [
+            "Label": "keepalive.demand",
+            "ProgramArguments": [executableURL.path],
+            "KeepAlive": ["AfterInitialDemand": true]
+        ]
+        try PropertyListSerialization.data(fromPropertyList: keepAliveDemandPlist, format: .xml, options: 0).write(to: keepAliveDemandPlistURL)
+
         // Standard macOS `open` commands targeting the app bundle or bundle identifier MUST be recognized as launch at login.
         let openPlistURL = temporaryDirectory.appendingPathComponent("open.launcher.plist")
         let openPlist: [String: Any] = [
@@ -226,6 +271,8 @@ final class LaunchAtLoginTests: XCTestCase {
         let isolatedDir = temporaryDirectory.appendingPathComponent("ditto_only", isDirectory: true)
         try FileManager.default.createDirectory(at: isolatedDir, withIntermediateDirectories: true)
         try dittoData.write(to: isolatedDir.appendingPathComponent("backup.ditto.plist"))
+        try PropertyListSerialization.data(fromPropertyList: explicitProgramDittoPlist, format: .xml, options: 0)
+            .write(to: isolatedDir.appendingPathComponent("explicit.ditto.plist"))
         let dittoStatus = LaunchAtLogin.status(
             serviceStatus: .notFound,
             bundleURL: appBundleURL,
@@ -235,6 +282,57 @@ final class LaunchAtLoginTests: XCTestCase {
         )
         XCTAssertFalse(dittoStatus.isEnabled, "A LaunchAgent invoking ditto with the app bundle as an argument must not be recognized as launch at login")
 
+        let triggerDir = temporaryDirectory.appendingPathComponent("trigger_tests", isDirectory: true)
+        try FileManager.default.createDirectory(at: triggerDir, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: triggerlessPlist, format: .xml, options: 0)
+            .write(to: triggerDir.appendingPathComponent("triggerless.plist"))
+        let triggerlessStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: triggerDir
+        )
+        XCTAssertFalse(triggerlessStatus.isEnabled, "A LaunchAgent without RunAtLoad or KeepAlive must not be recognized as launch at login")
+
+        let keepAliveDemandDir = temporaryDirectory.appendingPathComponent("demand_tests", isDirectory: true)
+        try FileManager.default.createDirectory(at: keepAliveDemandDir, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: keepAliveDemandPlist, format: .xml, options: 0)
+            .write(to: keepAliveDemandDir.appendingPathComponent("demand.plist"))
+        let demandStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: keepAliveDemandDir
+        )
+        XCTAssertFalse(demandStatus.isEnabled, "KeepAlive with AfterInitialDemand must not be recognized as startup launch-at-login")
+
+        let keepAliveTrueDir = temporaryDirectory.appendingPathComponent("keepalive_tests", isDirectory: true)
+        try FileManager.default.createDirectory(at: keepAliveTrueDir, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: keepAliveTruePlist, format: .xml, options: 0)
+            .write(to: keepAliveTrueDir.appendingPathComponent("keepalive.plist"))
+        let keepAliveStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: keepAliveTrueDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertTrue(keepAliveStatus.isEnabled, "KeepAlive=true must be recognized as active startup agent")
+
+        // Domain override: if launchd has disabled the service label, it must not be reported as enabled.
+        let disabledOverrideStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: keepAliveTrueDir,
+            isServiceDisabled: { $0 == "keepalive.true" }
+        )
+        XCTAssertFalse(disabledOverrideStatus.isEnabled, "A service disabled via launchd domain override must not be reported as enabled")
+
         let openIsolatedDir = temporaryDirectory.appendingPathComponent("open_only", isDirectory: true)
         try FileManager.default.createDirectory(at: openIsolatedDir, withIntermediateDirectories: true)
         try openData.write(to: openIsolatedDir.appendingPathComponent("open.launcher.plist"))
@@ -243,9 +341,152 @@ final class LaunchAtLoginTests: XCTestCase {
             bundleURL: appBundleURL,
             executableURL: executableURL,
             bundleIdentifier: "local.tangerine.replica",
-            directory: openIsolatedDir
+            directory: openIsolatedDir,
+            isServiceDisabled: { _ in false }
         )
         XCTAssertTrue(openStatus.isEnabled, "A LaunchAgent invoking open targeting the app bundle must be recognized as launch at login")
+
+        // Program: /usr/bin/open with ProgramArguments: ["open", "-a", appBundleURL.path]
+        let explicitOpenProgDir = temporaryDirectory.appendingPathComponent("explicit_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: explicitOpenProgDir, withIntermediateDirectories: true)
+        let explicitOpenPlist: [String: Any] = [
+            "Label": "com.external.explicitopen",
+            "Program": "/usr/bin/open",
+            "ProgramArguments": ["open", "-a", appBundleURL.path],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: explicitOpenPlist, format: .xml, options: 0)
+            .write(to: explicitOpenProgDir.appendingPathComponent("explicit_open.plist"))
+        let explicitOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: explicitOpenProgDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertTrue(explicitOpenStatus.isEnabled, "Program: /usr/bin/open with arguments targeting app bundle must match")
+
+        // Program: /usr/bin/open where argv[0] happens to be app path, but arguments do not target app
+        let nonTargetOpenProgDir = temporaryDirectory.appendingPathComponent("nontarget_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: nonTargetOpenProgDir, withIntermediateDirectories: true)
+        let nonTargetOpenPlist: [String: Any] = [
+            "Label": "com.external.nontargetopen",
+            "Program": "/usr/bin/open",
+            "ProgramArguments": [executableURL.path, "https://example.com"],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: nonTargetOpenPlist, format: .xml, options: 0)
+            .write(to: nonTargetOpenProgDir.appendingPathComponent("nontarget_open.plist"))
+        let nonTargetOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: nonTargetOpenProgDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertFalse(nonTargetOpenStatus.isEnabled, "Program: /usr/bin/open must not treat argv[0] as target")
+
+        // open -a OtherApp /path/to/ThisApp.app must not match ThisApp
+        let otherAppOpenDir = temporaryDirectory.appendingPathComponent("otherapp_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherAppOpenDir, withIntermediateDirectories: true)
+        let otherAppOpenPlist: [String: Any] = [
+            "Label": "com.external.otherappopen",
+            "ProgramArguments": ["/usr/bin/open", "-a", "TextEdit", appBundleURL.path],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: otherAppOpenPlist, format: .xml, options: 0)
+            .write(to: otherAppOpenDir.appendingPathComponent("otherapp_open.plist"))
+        let otherAppOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: otherAppOpenDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertFalse(otherAppOpenStatus.isEnabled, "open -a OtherApp /path/to/ThisApp must not match ThisApp")
+
+        // open -b bundleId --args -a TextEdit must match because -a is after --args
+        let argsOpenDir = temporaryDirectory.appendingPathComponent("args_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: argsOpenDir, withIntermediateDirectories: true)
+        let argsOpenPlist: [String: Any] = [
+            "Label": "com.external.argsopen",
+            "ProgramArguments": ["/usr/bin/open", "-b", "local.tangerine.replica", "--args", "-a", "TextEdit"],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: argsOpenPlist, format: .xml, options: 0)
+            .write(to: argsOpenDir.appendingPathComponent("args_open.plist"))
+        let argsOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: argsOpenDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertTrue(argsOpenStatus.isEnabled, "open -b bundleId --args -a TextEdit must match bundleId")
+
+        // open -a /Volumes/Backup/Nashi.app must not match /path/to/Nashi.app at a different location
+        let diffLocationOpenDir = temporaryDirectory.appendingPathComponent("difflocation_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: diffLocationOpenDir, withIntermediateDirectories: true)
+        let diffLocationOpenPlist: [String: Any] = [
+            "Label": "com.external.difflocationopen",
+            "ProgramArguments": ["/usr/bin/open", "-a", "/Volumes/Backup/Nashi.app"],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: diffLocationOpenPlist, format: .xml, options: 0)
+            .write(to: diffLocationOpenDir.appendingPathComponent("difflocation_open.plist"))
+        let diffLocationOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: diffLocationOpenDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertFalse(diffLocationOpenStatus.isEnabled, "open -a with a different path must not match current app bundle")
+
+        // open -a <full-path-to-app> must match current app bundle
+        let byPathOpenDir = temporaryDirectory.appendingPathComponent("bypath_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: byPathOpenDir, withIntermediateDirectories: true)
+        let byPathOpenPlist: [String: Any] = [
+            "Label": "com.external.bypathopen",
+            "ProgramArguments": ["/usr/bin/open", "-a", appBundleURL.path],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: byPathOpenPlist, format: .xml, options: 0)
+            .write(to: byPathOpenDir.appendingPathComponent("bypath_open.plist"))
+        let byPathOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: byPathOpenDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertTrue(byPathOpenStatus.isEnabled, "open -a with full app path must match Nashi.app")
+
+        // open -R / open --reveal reveals in Finder; it must not be treated as a launch target
+        let revealOpenDir = temporaryDirectory.appendingPathComponent("reveal_open_prog", isDirectory: true)
+        try FileManager.default.createDirectory(at: revealOpenDir, withIntermediateDirectories: true)
+        let revealOpenPlist: [String: Any] = [
+            "Label": "com.external.revealopen",
+            "ProgramArguments": ["/usr/bin/open", "-R", appBundleURL.path],
+            "RunAtLoad": true
+        ]
+        try PropertyListSerialization.data(fromPropertyList: revealOpenPlist, format: .xml, options: 0)
+            .write(to: revealOpenDir.appendingPathComponent("reveal_open.plist"))
+        let revealOpenStatus = LaunchAtLogin.status(
+            serviceStatus: .notFound,
+            bundleURL: appBundleURL,
+            executableURL: executableURL,
+            bundleIdentifier: "local.tangerine.replica",
+            directory: revealOpenDir,
+            isServiceDisabled: { _ in false }
+        )
+        XCTAssertFalse(revealOpenStatus.isEnabled, "open -R must not be recognized as launching the app")
 
         XCTAssertNil(LaunchAtLogin.syncLaunchMinimized(
             true,
